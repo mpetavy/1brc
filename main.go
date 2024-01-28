@@ -6,14 +6,11 @@ import (
 	"io"
 	"os"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
-
-type block []byte
 
 type values struct {
 	count int
@@ -28,11 +25,11 @@ var (
 	//file_name   = "/home/ransom/java/1brc/README.md"
 	file_name = "/home/ransom/java/1brc/measurements.txt"
 
-	workBlocks chan block
-	freeBlocks chan block
-	done       = make(chan struct{})
-	keyvalues  = make(map[string]float64)
-	mu         sync.Mutex
+	workBlocks chan []byte
+	//freeBlocks chan []byte
+	done      = make(chan struct{})
+	keyvalues = make(map[string]float64)
+	mu        sync.Mutex
 )
 
 func oops(err error) {
@@ -73,7 +70,7 @@ func PrintBytes(ba []byte, breakOnLineEndings bool) {
 		}
 	}
 
-	fmt.Printf("%s\n", str)
+	//fmt.Printf("%s\n", str)
 }
 
 func filereader() {
@@ -86,22 +83,40 @@ func filereader() {
 
 	var w int64 = 0
 
+	var p []byte
+
 loop:
-	for b := range freeBlocks {
+	for {
+		b := make([]byte, block_size)
+
 		n, err := file.Read(b)
 
-		w += int64(n)
+		if p != nil {
+			b = append(p, b...)
+			p = nil
+		}
 
 		switch err {
 		case io.EOF:
-			close(workBlocks)
-
-			break loop
-		case nil:
-			if n < len(b) {
-				workBlocks <- b[:n]
+			if p != nil {
+				workBlocks <- p
+				p = nil
 			} else {
-				workBlocks <- b
+				w++
+
+				close(workBlocks)
+
+				break loop
+			}
+		case nil:
+			for n = len(b) - 1; n >= 0 && b[n] != '\n'; n-- {
+			}
+
+			w += int64(n)
+
+			workBlocks <- b[:n]
+			if len(b) != n {
+				p = b[n:]
 			}
 		default:
 			oops(err)
@@ -122,6 +137,13 @@ func copier() {
 	var w int64 = 0
 
 	for b := range workBlocks {
+		//fmt.Printf("%d\n", len(b))
+		if len(b) == 0 {
+			close(workBlocks)
+
+			continue
+		}
+
 		n, err := file.Write(b)
 		oops(err)
 
@@ -131,7 +153,7 @@ func copier() {
 			oops(fmt.Errorf("len mismatch"))
 		}
 
-		freeBlocks <- b
+		//freeBlocks <- b
 	}
 
 	fmt.Printf("write: %d\n", w)
@@ -189,7 +211,7 @@ func worker() {
 			c = s - c
 		}
 
-		freeBlocks <- b
+		//freeBlocks <- b
 	}
 
 	close(done)
@@ -201,27 +223,27 @@ func main() {
 		fmt.Printf("%v\n", time.Since(start))
 	}()
 
-	workBlocks = make(chan block, block_count)
-	freeBlocks = make(chan block, block_count)
+	workBlocks = make(chan []byte, block_count)
+	//freeBlocks = make(chan []byte, block_count)
 
-	for i := 0; i < block_count; i++ {
-		freeBlocks <- make([]byte, block_size)
-	}
+	//for i := 0; i < block_count; i++ {
+	//	freeBlocks <- make([]byte, block_size)
+	//}
 
 	go filereader()
-	//go copier()
-	go worker()
-
-	var keys []string
-	for k := range keyvalues {
-		keys = append(keys, k)
-	}
-
-	sort.Strings(keys)
-
-	for _, k := range keys {
-		fmt.Printf("%s: %f", k, keyvalues[k])
-	}
+	go copier()
+	//go worker()
+	//
+	//var keys []string
+	//for k := range keyvalues {
+	//	keys = append(keys, k)
+	//}
+	//
+	//sort.Strings(keys)
+	//
+	//for _, k := range keys {
+	//	fmt.Printf("%s: %f", k, keyvalues[k])
+	//}
 
 	<-done
 }
