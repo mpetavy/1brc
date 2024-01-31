@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+	"golang.org/x/exp/mmap"
 	"io"
 	"os"
 	"runtime"
@@ -18,18 +19,23 @@ type values struct {
 	max   int
 }
 
+type block struct {
+	Data []byte
+	Len  int
+}
+
 var (
-	block_count = runtime.NumCPU()
+	block_count = runtime.NumCPU() * 2
 	block_size  = 1024 * 256
 	//file_name   = "/home/ransom/Downloads/VeraCrypt_1.26.7.tar.gz"
 	//file_name   = "/home/ransom/java/1brc/README.md"
 	file_name = "/home/ransom/java/1brc/measurements.txt"
 
-	workBlocks chan []byte
-	//freeBlocks chan []byte
-	done      = make(chan struct{})
-	keyvalues = make(map[string]float64)
-	mu        sync.Mutex
+	workBlocks chan block
+	freeBlocks chan block
+	done       = make(chan struct{})
+	keyvalues  = make(map[string]float64)
+	mu         sync.Mutex
 )
 
 func oops(err error) {
@@ -87,19 +93,18 @@ func filereader() {
 
 loop:
 	for {
-		b := make([]byte, block_size)
+		b := <-freeBlocks
 
-		n, err := file.Read(b)
+		copy(b.Data, p)
 
-		if p != nil {
-			b = append(p, b...)
-			p = nil
-		}
+		n, err := file.Read(b.Data[len(p):])
+
+		b.Len = n + len(p)
 
 		switch err {
 		case io.EOF:
 			if p != nil {
-				workBlocks <- p
+				workBlocks <- b
 				p = nil
 			} else {
 				w++
@@ -109,15 +114,92 @@ loop:
 				break loop
 			}
 		case nil:
-			for n = len(b) - 1; n >= 0 && b[n] != '\n'; n-- {
+			for n = b.Len - 1; n >= 0 && b.Data[n] != '\n'; n-- {
 			}
 
 			w += int64(n)
 
-			workBlocks <- b[:n]
-			if len(b) != n {
-				p = b[n:]
+			if n < b.Len {
+				p = make([]byte, b.Len-n)
+				copy(p, b.Data[n:])
 			}
+
+			b.Len = n
+
+			workBlocks <- b
+		default:
+			oops(err)
+		}
+	}
+
+	fmt.Printf("read:  %d\n", w)
+}
+
+func mmapFilereader() {
+	file, err := mmap.Open(file_name)
+	oops(err)
+
+	defer func() {
+		oops(file.Close())
+	}()
+
+	size := int64(file.Len())
+
+	var w int64 = 0
+
+	var p []byte
+
+	b := <-freeBlocks
+
+	for w < size {
+		n, err := file.ReadAt(b.Data, w)
+		if err == io.EOF {
+			return
+		} else {
+			oops(err)
+		}
+
+		w += int64(n)
+	}
+
+	return
+
+loop:
+	for w < size {
+		b := <-freeBlocks
+
+		copy(b.Data, p)
+
+		n, err := file.ReadAt(b.Data[len(p):], w)
+
+		b.Len = n + len(p)
+
+		switch err {
+		case io.EOF:
+			if p != nil {
+				workBlocks <- b
+				p = nil
+			} else {
+				w++
+
+				close(workBlocks)
+
+				break loop
+			}
+		case nil:
+			for n = b.Len - 1; n >= 0 && b.Data[n] != '\n'; n-- {
+			}
+
+			w += int64(b.Len)
+
+			if n < b.Len {
+				p = make([]byte, b.Len-n)
+				copy(p, b.Data[n:])
+			}
+
+			b.Len = n
+
+			workBlocks <- b
 		default:
 			oops(err)
 		}
@@ -138,22 +220,17 @@ func copier() {
 
 	for b := range workBlocks {
 		//fmt.Printf("%d\n", len(b))
-		if len(b) == 0 {
-			close(workBlocks)
 
-			continue
-		}
-
-		n, err := file.Write(b)
+		n, err := file.Write(b.Data[:b.Len])
 		oops(err)
 
 		w += int64(n)
 
-		if n != len(b) {
+		if n != b.Len {
 			oops(fmt.Errorf("len mismatch"))
 		}
 
-		//freeBlocks <- b
+		freeBlocks <- b
 	}
 
 	fmt.Printf("write: %d\n", w)
@@ -174,48 +251,37 @@ func add(k []byte, v []byte) {
 	mu.Unlock()
 }
 
-func worker() {
-	var p []byte
-	var s, c int
-
-	for b := range workBlocks {
-		b = append(p, b...)
-		s = 0
-
-		for i := 0; i < len(b); i++ {
-			ch := b[i]
-			switch ch {
-			case ';':
-				c = i
-			case '\n':
-				go add(b[s:c], b[c+1:i])
-				//key := string(b[s:c])
-				//
-				//value, err := strconv.ParseFloat(string(b[c+1:i]), 64)
-				//oops(err)
-				//
-				//keyvalues[key] = value
-				//
-				//key = key
-				//value = value
-
-				//fmt.Printf("%s: %f\n", key, value)
-
-				s = i + 1
-			}
-		}
-
-		if s < len(b) {
-			clear(p)
-			p = append(p, b[s:]...)
-			c = s - c
-		}
-
-		//freeBlocks <- b
-	}
-
-	close(done)
-}
+//func worker() {
+//	var p []byte
+//	var s, c int
+//
+//	for b := range workBlocks {
+//		b = append(p, b...)
+//		s = 0
+//
+//		for i := 0; i < len(b); i++ {
+//			ch := b[i]
+//			switch ch {
+//			case ';':
+//				c = i
+//			case '\n':
+//				go add(b[s:c], b[c+1:i])
+//
+//				s = i + 1
+//			}
+//		}
+//
+//		if s < len(b) {
+//			clear(p)
+//			p = append(p, b[s:]...)
+//			c = s - c
+//		}
+//
+//		//freeBlocks <- b
+//	}
+//
+//	close(done)
+//}
 
 func main() {
 	start := time.Now()
@@ -223,15 +289,19 @@ func main() {
 		fmt.Printf("%v\n", time.Since(start))
 	}()
 
-	workBlocks = make(chan []byte, block_count)
-	//freeBlocks = make(chan []byte, block_count)
+	workBlocks = make(chan block, block_count)
+	freeBlocks = make(chan block, block_count)
 
-	//for i := 0; i < block_count; i++ {
-	//	freeBlocks <- make([]byte, block_size)
-	//}
+	for i := 0; i < block_count; i++ {
+		freeBlocks <- block{
+			Data: make([]byte, block_size),
+			Len:  0,
+		}
+	}
 
 	go filereader()
 	go copier()
+
 	//go worker()
 	//
 	//var keys []string
