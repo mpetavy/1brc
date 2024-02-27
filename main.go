@@ -233,7 +233,7 @@ func main() {
 		fmt.Printf("debug limit: %v\n", debug)
 	}
 
-	pageCount = 1
+	pageCount = 10
 	blockSize = int64(os.Getpagesize()) * pageCount
 
 	fi, err := os.Stat(filename)
