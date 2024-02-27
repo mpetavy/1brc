@@ -6,6 +6,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -265,12 +266,18 @@ func main() {
 	go readMeasurements()
 
 	wgReader := sync.WaitGroup{}
+	sem := make(chan struct{}, runtime.NumCPU())
 
 	for b := range blockCh {
+		sem <- struct{}{}
+
 		wgReader.Add(1)
 
 		go func(b []byte) {
-			defer wgReader.Done()
+			defer func() {
+				wgReader.Done()
+				<-sem
+			}()
 
 			scanBlock(b)
 		}(b)
