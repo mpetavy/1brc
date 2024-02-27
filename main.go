@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-type block []byte
-
 type measurement struct {
 	town string
 	temp int
@@ -29,12 +27,13 @@ type stats struct {
 var filename = "/home/ransom/java/1brc/measurements.txt"
 var pageCount int64
 var blockSize int64
-var blockCh chan block
+var blockCh chan []byte
+var done = make(chan struct{})
+var measurements = make(chan []measurement, 10000)
 
-// var debug int64 = 1 * 1024 * 1024 * 1024
+//var debug int64 = 1 * 1024 * 1024 * 1024
+
 var debug int64 = 0
-
-var measurements = []measurement{}
 
 func oops(err error) {
 	if err == nil {
@@ -77,7 +76,7 @@ func printBytes(ba []byte, breakOnLineEndings bool) {
 	fmt.Printf("%s\n", str)
 }
 
-func scanBlock(b block) {
+func scanBlock(b []byte) {
 	offset := 3
 
 	ms := []measurement{}
@@ -129,9 +128,7 @@ func scanBlock(b block) {
 		ms = append(ms, m)
 	}
 
-	//mu.Lock()
-	//measurements = append(measurements, ms...)
-	//mu.Unlock()
+	measurements <- ms
 }
 
 func readBlocks() {
@@ -153,7 +150,7 @@ func readBlocks() {
 
 loop:
 	for {
-		b := make(block, blockSize)
+		b := make([]byte, blockSize)
 		if len(remainder) > 0 {
 			copy(b, remainder)
 		}
@@ -170,15 +167,17 @@ loop:
 
 		read += int64(n)
 
+		l := len(remainder) + n
+
 		var i int
 
-		for i = n; i > 0 && b[i-1] != '\n'; i-- {
+		for i = l; i > 0 && b[i-1] != '\n'; i-- {
 		}
 
 		remainder = nil
 
-		if i < n {
-			remainder = make([]byte, n-i)
+		if i < l {
+			remainder = make([]byte, l-i)
 			copy(remainder, b[i:])
 		}
 
@@ -190,7 +189,7 @@ loop:
 	fmt.Printf("bytes read:  %d\n", read)
 }
 
-func readMeasurements() stats {
+func readMeasurements() {
 	s := stats{
 		lenMin:  100,
 		lenMax:  0,
@@ -198,16 +197,30 @@ func readMeasurements() stats {
 		tempMax: 0,
 	}
 
-	for _, m := range measurements {
-		l := len(m.town)
-		s.lenMin = min(s.lenMin, l)
-		s.lenMax = max(s.lenMax, l)
+	count := 0
 
-		s.tempMin = min(s.tempMin, m.temp)
-		s.tempMax = max(s.tempMax, m.temp)
+	for ms := range measurements {
+		count += len(ms)
+
+		for i := 0; i < len(ms); i++ {
+			m := ms[i]
+
+			l := len(m.town)
+			s.lenMin = min(s.lenMin, l)
+			s.lenMax = max(s.lenMax, l)
+
+			s.tempMin = min(s.tempMin, m.temp)
+			s.tempMax = max(s.tempMax, m.temp)
+		}
 	}
 
-	return s
+	fmt.Printf("count: %d\n", count)
+	fmt.Printf("town len min: %d\n", s.lenMin)
+	fmt.Printf("town len max: %d\n", s.lenMax)
+	fmt.Printf("temp min: %d\n", s.tempMin)
+	fmt.Printf("temp max: %d\n", s.tempMax)
+
+	close(done)
 }
 
 func main() {
@@ -220,7 +233,7 @@ func main() {
 		fmt.Printf("debug limit: %v\n", debug)
 	}
 
-	pageCount = 10
+	pageCount = 1
 	blockSize = int64(os.Getpagesize()) * pageCount
 
 	fi, err := os.Stat(filename)
@@ -228,9 +241,10 @@ func main() {
 
 	countBlocks := int(math.Round(float64(fi.Size()) / float64(blockSize)))
 
-	blockCh = make(chan block, countBlocks)
+	blockCh = make(chan []byte, countBlocks)
 
 	go readBlocks()
+	go readMeasurements()
 
 	wgReader := sync.WaitGroup{}
 
@@ -246,11 +260,7 @@ func main() {
 
 	wgReader.Wait()
 
-	sum := readMeasurements()
+	close(measurements)
 
-	//fmt.Printf("max go routines used: %d\n", mg)
-	fmt.Printf("town len min: %d\n", sum.lenMin)
-	fmt.Printf("town len max: %d\n", sum.lenMax)
-	fmt.Printf("temp min: %d\n", sum.tempMin)
-	fmt.Printf("temp max: %d\n", sum.tempMax)
+	<-done
 }
