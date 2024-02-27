@@ -29,7 +29,7 @@ var pageCount int64
 var blockSize int64
 var blockCh chan []byte
 var done = make(chan struct{})
-var measurements = make(chan []measurement, 10000)
+var measurements = make(chan []measurement, 1000000)
 
 //var debug int64 = 1 * 1024 * 1024 * 1024
 
