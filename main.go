@@ -6,33 +6,55 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
-type measurement struct {
-	town string
-	temp int
+type Measurement struct {
+	town  string
+	min   int64
+	max   int64
+	temp  int64
+	count int64
 }
 
-type stats struct {
-	lenMin  int
-	lenMax  int
-	tempMin int
-	tempMax int
+func (m *Measurement) Update(temp int64) {
+	m.temp += temp
+	m.count++
+
+	switch {
+	case temp < m.min:
+		m.min = temp
+	case temp > m.max:
+		m.max = temp
+	}
 }
+
+func (m *Measurement) Calc(other Measurement) {
+	m.temp += other.temp
+	m.count += other.count
+
+	switch {
+	case other.min < m.min:
+		m.min = other.min
+	case other.max > m.max:
+		m.max = other.max
+	}
+}
+
+type Measurements map[string]Measurement
 
 var filename = "/home/ransom/java/1brc/measurements.txt"
 var pageCount int64
 var blockSize int64
 var blockCh chan []byte
 var done = make(chan struct{})
-var measurements = make(chan []measurement, 1000000)
+var measurements = make(chan Measurements, 1000000)
 
-//var debug int64 = 1 * 1024 * 1024 * 1024
-
+// var debug int64 = 1 * 1024 * 1024 * 1024
 var debug int64 = 0
 
 func oops(err error) {
@@ -79,11 +101,11 @@ func printBytes(ba []byte, breakOnLineEndings bool) {
 func scanBlock(b []byte) {
 	offset := 3
 
-	ms := []measurement{}
+	ms := make(Measurements)
 
 	for index := 0; index < len(b); index++ {
 		var town string
-		var temp int
+		var temp int64
 		var minus bool
 
 		startIndex := index
@@ -110,7 +132,7 @@ func scanBlock(b []byte) {
 				break loop
 			default:
 				temp = temp * 10
-				temp += int(b[index] - '0')
+				temp += int64(b[index] - '0')
 			}
 
 			index++
@@ -120,12 +142,10 @@ func scanBlock(b []byte) {
 			temp = temp * -1
 		}
 
-		m := measurement{
-			town: town,
-			temp: temp,
-		}
-
-		ms = append(ms, m)
+		m, _ := ms[town]
+		m.town = town
+		m.Update(temp)
+		ms[town] = m
 	}
 
 	measurements <- ms
@@ -190,35 +210,33 @@ loop:
 }
 
 func readMeasurements() {
-	s := stats{
-		lenMin:  100,
-		lenMax:  0,
-		tempMin: 1000,
-		tempMax: 0,
-	}
-
-	count := 0
+	sum := make(Measurements)
 
 	for ms := range measurements {
-		count += len(ms)
-
-		for i := 0; i < len(ms); i++ {
-			m := ms[i]
-
-			l := len(m.town)
-			s.lenMin = min(s.lenMin, l)
-			s.lenMax = max(s.lenMax, l)
-
-			s.tempMin = min(s.tempMin, m.temp)
-			s.tempMax = max(s.tempMax, m.temp)
+		for town, m := range ms {
+			s, _ := sum[town]
+			s.town = town
+			s.Calc(m)
+			sum[town] = s
 		}
 	}
 
+	towns := []string{}
+	for town := range sum {
+		towns = append(towns, town)
+	}
+
+	sort.Strings(towns)
+
+	var count int64
+
+	for i, town := range towns {
+		s := sum[town]
+		fmt.Printf("#%d %s: %.1f %.1f %.1f\n", i, town, float64(s.min)/10.0, float64(s.max)/10.0, float64(s.temp)/float64(s.count*10))
+		count += s.count
+	}
+
 	fmt.Printf("count: %d\n", count)
-	fmt.Printf("town len min: %d\n", s.lenMin)
-	fmt.Printf("town len max: %d\n", s.lenMax)
-	fmt.Printf("temp min: %d\n", s.tempMin)
-	fmt.Printf("temp max: %d\n", s.tempMax)
 
 	close(done)
 }
@@ -239,7 +257,7 @@ func main() {
 	fi, err := os.Stat(filename)
 	oops(err)
 
-	countBlocks := int(math.Round(float64(fi.Size()) / float64(blockSize)))
+	countBlocks := int64(math.Round(float64(fi.Size()) / float64(blockSize)))
 
 	blockCh = make(chan []byte, countBlocks)
 
