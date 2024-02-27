@@ -12,15 +12,26 @@ import (
 	"time"
 )
 
-type dim struct {
+type block struct {
 	start int64
 	end   int64
 }
 
+type measurement struct {
+	town string
+	temp int
+}
+
 var filename = "/home/ransom/java/1brc/measurements.txt"
-var blocksize = int64(1 * 256 * 1024)
 var buf []byte
-var dims chan dim
+var blockSize = int64(1 * 256 * 1024)
+var blockCh chan block
+
+var mu = sync.Mutex{}
+var lenMin = 100
+var lenMax = 0
+var tempMin = 1000
+var tempMax = 0
 
 func oops(err error) {
 	if err == nil {
@@ -68,7 +79,8 @@ func scan(start int64, end int64) {
 
 	for i := start; i <= end; i++ {
 		var town string
-		var temp int64
+		var temp int
+		var minus bool
 
 		lastI := i
 		i += offset
@@ -89,20 +101,31 @@ func scan(start int64, end int64) {
 			switch buf[i] {
 			case '.':
 			case '-':
-				temp = temp * -1
+				minus = true
 			case '\n':
 				break loop
 			default:
 				temp = temp * 10
-				temp += int64(buf[i] - '0')
+				temp += int(buf[i] - '0')
 			}
 
 			i++
 		}
 
-		town = town
+		if minus {
+			temp = temp * -1
+		}
 
-		//fmt.Printf("%s:%d\n", town, temp)
+		mu.Lock()
+
+		l := len(town)
+		lenMin = min(lenMin, l)
+		lenMax = max(lenMax, l)
+
+		tempMin = min(tempMin, temp)
+		tempMax = max(tempMax, temp)
+
+		mu.Unlock()
 	}
 }
 
@@ -121,7 +144,7 @@ func reader() {
 
 loop:
 	for {
-		bufEnd := bufStart + blocksize
+		bufEnd := bufStart + blockSize
 		if bufEnd > buflen {
 			bufEnd = buflen
 		}
@@ -137,7 +160,7 @@ loop:
 		for ; blockEnd >= blockStart && buf[blockEnd] != '\n'; blockEnd-- {
 		}
 
-		dims <- dim{
+		blockCh <- block{
 			start: blockStart,
 			end:   blockEnd,
 		}
@@ -147,7 +170,7 @@ loop:
 		bufStart += int64(n)
 	}
 
-	close(dims)
+	close(blockCh)
 
 	fmt.Printf("read:  %d\n", bufStart)
 }
@@ -161,10 +184,10 @@ func main() {
 	fi, err := os.Stat(filename)
 	oops(err)
 
-	count := int(math.Round(float64(fi.Size()) / float64(blocksize)))
+	count := int(math.Round(float64(fi.Size()) / float64(blockSize)))
 
 	buf = make([]byte, fi.Size())
-	dims = make(chan dim, count)
+	blockCh = make(chan block, count)
 
 	go reader()
 
@@ -172,7 +195,7 @@ func main() {
 
 	mg := 0
 
-	for dim := range dims {
+	for dim := range blockCh {
 		wg.Add(1)
 		gr := runtime.NumGoroutine()
 		if mg < gr {
@@ -187,5 +210,9 @@ func main() {
 
 	wg.Wait()
 
-	fmt.Printf("%d\n", mg)
+	fmt.Printf("max go routines used: %d\n", mg)
+	fmt.Printf("town len min: %d\n", lenMin)
+	fmt.Printf("town len max: %d\n", lenMax)
+	fmt.Printf("temp min: %d\n", tempMin)
+	fmt.Printf("temp max: %d\n", tempMax)
 }
