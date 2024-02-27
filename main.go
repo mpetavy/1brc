@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strconv"
@@ -11,10 +12,7 @@ import (
 	"time"
 )
 
-type block struct {
-	start int64
-	end   int64
-}
+type block []byte
 
 type measurement struct {
 	town string
@@ -29,13 +27,12 @@ type stats struct {
 }
 
 var filename = "/home/ransom/java/1brc/measurements.txt"
-var buf []byte
 var pageCount int64
 var blockSize int64
 var blockCh chan block
-var mu = sync.Mutex{}
 
-var debug int64 = 1 * 1024 * 1024 * 1024
+// var debug int64 = 1 * 1024 * 1024 * 1024
+var debug int64 = 0
 
 var measurements = []measurement{}
 
@@ -80,12 +77,12 @@ func printBytes(ba []byte, breakOnLineEndings bool) {
 	fmt.Printf("%s\n", str)
 }
 
-func scanBlock(start int64, end int64) {
-	offset := int64(3)
+func scanBlock(b block) {
+	offset := 3
 
 	ms := []measurement{}
 
-	for index := start; index <= end; index++ {
+	for index := 0; index < len(b); index++ {
 		var town string
 		var temp int
 		var minus bool
@@ -94,8 +91,8 @@ func scanBlock(start int64, end int64) {
 		index += offset
 
 		for {
-			if buf[index] == ';' {
-				town = string(buf[startIndex:index])
+			if b[index] == ';' {
+				town = string(b[startIndex:index])
 				index += 1
 
 				break
@@ -106,7 +103,7 @@ func scanBlock(start int64, end int64) {
 
 	loop:
 		for {
-			switch buf[index] {
+			switch b[index] {
 			case '.':
 			case '-':
 				minus = true
@@ -114,7 +111,7 @@ func scanBlock(start int64, end int64) {
 				break loop
 			default:
 				temp = temp * 10
-				temp += int(buf[index] - '0')
+				temp += int(b[index] - '0')
 			}
 
 			index++
@@ -132,9 +129,9 @@ func scanBlock(start int64, end int64) {
 		ms = append(ms, m)
 	}
 
-	mu.Lock()
-	measurements = append(measurements, ms...)
-	mu.Unlock()
+	//mu.Lock()
+	//measurements = append(measurements, ms...)
+	//mu.Unlock()
 }
 
 func readBlocks() {
@@ -150,50 +147,47 @@ func readBlocks() {
 		oops(file.Close())
 	}()
 
-	var bufStart int64
-	var blockStart int64
-	var blockEnd int64
-	buflen := int64(len(buf))
-
 	var read int64 = 0
+
+	var remainder []byte
 
 loop:
 	for {
-		bufEnd := bufStart + blockSize
-		if bufEnd > buflen {
-			bufEnd = buflen
-		}
-
-		if bufStart == bufEnd {
-			break loop
+		b := make(block, blockSize)
+		if len(remainder) > 0 {
+			copy(b, remainder)
 		}
 
 		if debug > 0 && read > debug {
 			break loop
 		}
 
-		n, err := file.Read(buf[bufStart:bufEnd])
+		n, err := file.Read(b[len(remainder):])
+		if err == io.EOF {
+			break
+		}
 		oops(err)
 
 		read += int64(n)
 
-		blockEnd = bufStart + int64(n) - 1
-		for ; blockEnd >= blockStart && buf[blockEnd] != '\n'; blockEnd-- {
+		var i int
+
+		for i = n; i > 0 && b[i-1] != '\n'; i-- {
 		}
 
-		blockCh <- block{
-			start: blockStart,
-			end:   blockEnd,
+		remainder = nil
+
+		if i < n {
+			remainder = make([]byte, n-i)
+			copy(remainder, b[i:])
 		}
 
-		blockStart = blockEnd + 1
-
-		bufStart += int64(n)
+		blockCh <- b[:i]
 	}
 
 	close(blockCh)
 
-	fmt.Printf("bytes read:  %d\n", bufStart)
+	fmt.Printf("bytes read:  %d\n", read)
 }
 
 func readMeasurements() stats {
@@ -226,7 +220,7 @@ func main() {
 		fmt.Printf("debug limit: %v\n", debug)
 	}
 
-	pageCount = 100
+	pageCount = 10
 	blockSize = int64(os.Getpagesize()) * pageCount
 
 	fi, err := os.Stat(filename)
@@ -234,7 +228,6 @@ func main() {
 
 	countBlocks := int(math.Round(float64(fi.Size()) / float64(blockSize)))
 
-	buf = make([]byte, fi.Size())
 	blockCh = make(chan block, countBlocks)
 
 	go readBlocks()
@@ -244,11 +237,11 @@ func main() {
 	for b := range blockCh {
 		wgReader.Add(1)
 
-		go func(start int64, end int64) {
+		go func(b []byte) {
 			defer wgReader.Done()
 
-			scanBlock(start, end)
-		}(b.start, b.end)
+			scanBlock(b)
+		}(b)
 	}
 
 	wgReader.Wait()
