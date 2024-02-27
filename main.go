@@ -35,7 +35,7 @@ var blockSize int64
 var blockCh chan block
 var mu = sync.Mutex{}
 
-var debug int64 = 0
+var debug int64 = 1 * 1024 * 1024 * 1024
 
 var measurements = []measurement{}
 
@@ -83,6 +83,8 @@ func printBytes(ba []byte, breakOnLineEndings bool) {
 func scanBlock(start int64, end int64) {
 	offset := int64(3)
 
+	ms := []measurement{}
+
 	for index := start; index <= end; index++ {
 		var town string
 		var temp int
@@ -127,10 +129,12 @@ func scanBlock(start int64, end int64) {
 			temp: temp,
 		}
 
-		mu.Lock()
-		measurements = append(measurements, m)
-		mu.Unlock()
+		ms = append(ms, m)
 	}
+
+	mu.Lock()
+	measurements = append(measurements, ms...)
+	mu.Unlock()
 }
 
 func readBlocks() {
@@ -151,7 +155,7 @@ func readBlocks() {
 	var blockEnd int64
 	buflen := int64(len(buf))
 
-	var i int64 = 0
+	var read int64 = 0
 
 loop:
 	for {
@@ -164,14 +168,14 @@ loop:
 			break loop
 		}
 
-		if debug > 0 && i == debug {
+		if debug > 0 && read > debug {
 			break loop
 		}
 
-		i++
-
 		n, err := file.Read(buf[bufStart:bufEnd])
 		oops(err)
+
+		read += int64(n)
 
 		blockEnd = bufStart + int64(n) - 1
 		for ; blockEnd >= blockStart && buf[blockEnd] != '\n'; blockEnd-- {
