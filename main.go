@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,9 +33,11 @@ var buf []byte
 var pageCount int64
 var blockSize int64
 var blockCh chan block
-var measurementCh chan measurement
+var mu = sync.Mutex{}
 
-var debug int64 = 1000
+var debug int64 = 0
+
+var measurements = []measurement{}
 
 func oops(err error) {
 	if err == nil {
@@ -126,7 +127,9 @@ func scanBlock(start int64, end int64) {
 			temp: temp,
 		}
 
-		measurementCh <- m
+		mu.Lock()
+		measurements = append(measurements, m)
+		mu.Unlock()
 	}
 }
 
@@ -197,7 +200,7 @@ func readMeasurements() stats {
 		tempMax: 0,
 	}
 
-	for m := range measurementCh {
+	for _, m := range measurements {
 		l := len(m.town)
 		s.lenMin = min(s.lenMin, l)
 		s.lenMax = max(s.lenMax, l)
@@ -230,35 +233,7 @@ func main() {
 	buf = make([]byte, fi.Size())
 	blockCh = make(chan block, countBlocks)
 
-	measurementCh = make(chan measurement, 100000)
-
 	go readBlocks()
-
-	mu := sync.Mutex{}
-	sum := stats{}
-
-	wgMeasurements := sync.WaitGroup{}
-	for i := 0; i < runtime.NumCPU()*2; i++ {
-		wgMeasurements.Add(1)
-
-		go func() {
-			defer wgMeasurements.Done()
-
-			s := readMeasurements()
-
-			mu.Lock()
-
-			sum.lenMin = min(sum.lenMin, s.lenMin)
-			sum.lenMax = max(sum.lenMax, s.lenMax)
-
-			sum.tempMin = min(sum.tempMin, s.tempMin)
-			sum.tempMax = max(sum.tempMax, s.tempMax)
-
-			fmt.Printf("%v\n", sum)
-
-			mu.Unlock()
-		}()
-	}
 
 	wgReader := sync.WaitGroup{}
 
@@ -274,9 +249,7 @@ func main() {
 
 	wgReader.Wait()
 
-	close(measurementCh)
-
-	wgMeasurements.Wait()
+	sum := readMeasurements()
 
 	//fmt.Printf("max go routines used: %d\n", mg)
 	fmt.Printf("town len min: %d\n", sum.lenMin)
