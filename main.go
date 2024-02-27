@@ -22,16 +22,21 @@ type measurement struct {
 	temp int
 }
 
+type stats struct {
+	lenMin  int
+	lenMax  int
+	tempMin int
+	tempMax int
+}
+
 var filename = "/home/ransom/java/1brc/measurements.txt"
 var buf []byte
-var blockSize = int64(1 * 256 * 1024)
+var pageCount int64
+var blockSize int64
 var blockCh chan block
+var measurementCh chan measurement
 
-var mu = sync.Mutex{}
-var lenMin = 100
-var lenMax = 0
-var tempMin = 1000
-var tempMax = 0
+var debug int64 = 1000
 
 func oops(err error) {
 	if err == nil {
@@ -74,31 +79,31 @@ func printBytes(ba []byte, breakOnLineEndings bool) {
 	fmt.Printf("%s\n", str)
 }
 
-func scan(start int64, end int64) {
-	offset := int64(2)
+func scanBlock(start int64, end int64) {
+	offset := int64(3)
 
-	for i := start; i <= end; i++ {
+	for index := start; index <= end; index++ {
 		var town string
 		var temp int
 		var minus bool
 
-		lastI := i
-		i += offset
+		startIndex := index
+		index += offset
 
 		for {
-			if buf[i] == ';' {
-				town = string(buf[lastI:i])
-				i += 1
+			if buf[index] == ';' {
+				town = string(buf[startIndex:index])
+				index += 1
 
 				break
 			}
 
-			i++
+			index++
 		}
 
 	loop:
 		for {
-			switch buf[i] {
+			switch buf[index] {
 			case '.':
 			case '-':
 				minus = true
@@ -106,30 +111,31 @@ func scan(start int64, end int64) {
 				break loop
 			default:
 				temp = temp * 10
-				temp += int(buf[i] - '0')
+				temp += int(buf[index] - '0')
 			}
 
-			i++
+			index++
 		}
 
 		if minus {
 			temp = temp * -1
 		}
 
-		mu.Lock()
+		m := measurement{
+			town: town,
+			temp: temp,
+		}
 
-		l := len(town)
-		lenMin = min(lenMin, l)
-		lenMax = max(lenMax, l)
-
-		tempMin = min(tempMin, temp)
-		tempMax = max(tempMax, temp)
-
-		mu.Unlock()
+		measurementCh <- m
 	}
 }
 
-func reader() {
+func readBlocks() {
+	start := time.Now()
+	defer func() {
+		fmt.Printf("time readBlocks: %v\n", time.Since(start))
+	}()
+
 	file, err := os.Open(filename)
 	oops(err)
 
@@ -142,6 +148,8 @@ func reader() {
 	var blockEnd int64
 	buflen := int64(len(buf))
 
+	var i int64 = 0
+
 loop:
 	for {
 		bufEnd := bufStart + blockSize
@@ -152,6 +160,12 @@ loop:
 		if bufStart == bufEnd {
 			break loop
 		}
+
+		if debug > 0 && i == debug {
+			break loop
+		}
+
+		i++
 
 		n, err := file.Read(buf[bufStart:bufEnd])
 		oops(err)
@@ -172,47 +186,101 @@ loop:
 
 	close(blockCh)
 
-	fmt.Printf("read:  %d\n", bufStart)
+	fmt.Printf("bytes read:  %d\n", bufStart)
+}
+
+func readMeasurements() stats {
+	s := stats{
+		lenMin:  100,
+		lenMax:  0,
+		tempMin: 1000,
+		tempMax: 0,
+	}
+
+	for m := range measurementCh {
+		l := len(m.town)
+		s.lenMin = min(s.lenMin, l)
+		s.lenMax = max(s.lenMax, l)
+
+		s.tempMin = min(s.tempMin, m.temp)
+		s.tempMax = max(s.tempMax, m.temp)
+	}
+
+	return s
 }
 
 func main() {
 	start := time.Now()
 	defer func() {
-		fmt.Printf("%v\n", time.Since(start))
+		fmt.Printf("time main: %v\n", time.Since(start))
 	}()
+
+	if debug > 0 {
+		fmt.Printf("debug limit: %v\n", debug)
+	}
+
+	pageCount = 100
+	blockSize = int64(os.Getpagesize()) * pageCount
 
 	fi, err := os.Stat(filename)
 	oops(err)
 
-	count := int(math.Round(float64(fi.Size()) / float64(blockSize)))
+	countBlocks := int(math.Round(float64(fi.Size()) / float64(blockSize)))
 
 	buf = make([]byte, fi.Size())
-	blockCh = make(chan block, count)
+	blockCh = make(chan block, countBlocks)
 
-	go reader()
+	measurementCh = make(chan measurement, 100000)
 
-	wg := sync.WaitGroup{}
+	go readBlocks()
 
-	mg := 0
+	mu := sync.Mutex{}
+	sum := stats{}
 
-	for dim := range blockCh {
-		wg.Add(1)
-		gr := runtime.NumGoroutine()
-		if mg < gr {
-			mg = gr
-		}
-		go func(start int64, end int64) {
-			defer wg.Done()
+	wgMeasurements := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU()*2; i++ {
+		wgMeasurements.Add(1)
 
-			scan(start, end)
-		}(dim.start, dim.end)
+		go func() {
+			defer wgMeasurements.Done()
+
+			s := readMeasurements()
+
+			mu.Lock()
+
+			sum.lenMin = min(sum.lenMin, s.lenMin)
+			sum.lenMax = max(sum.lenMax, s.lenMax)
+
+			sum.tempMin = min(sum.tempMin, s.tempMin)
+			sum.tempMax = max(sum.tempMax, s.tempMax)
+
+			fmt.Printf("%v\n", sum)
+
+			mu.Unlock()
+		}()
 	}
 
-	wg.Wait()
+	wgReader := sync.WaitGroup{}
 
-	fmt.Printf("max go routines used: %d\n", mg)
-	fmt.Printf("town len min: %d\n", lenMin)
-	fmt.Printf("town len max: %d\n", lenMax)
-	fmt.Printf("temp min: %d\n", tempMin)
-	fmt.Printf("temp max: %d\n", tempMax)
+	for b := range blockCh {
+		wgReader.Add(1)
+
+		go func(start int64, end int64) {
+			defer wgReader.Done()
+
+			scanBlock(start, end)
+		}(b.start, b.end)
+	}
+
+	wgReader.Wait()
+
+	close(measurementCh)
+
+	wgMeasurements.Wait()
+
+	//fmt.Printf("max go routines used: %d\n", mg)
+	fmt.Printf("town len min: %d\n", sum.lenMin)
+	fmt.Printf("town len max: %d\n", sum.lenMax)
+	fmt.Printf("temp min: %d\n", sum.tempMin)
+	fmt.Printf("temp max: %d\n", sum.tempMax)
 }
