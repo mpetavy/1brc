@@ -3,8 +3,7 @@ package main
 import (
 	"encoding/hex"
 	"fmt"
-	"golang.org/x/exp/mmap"
-	"io"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -13,30 +12,15 @@ import (
 	"time"
 )
 
-type values struct {
-	count int
-	min   int
-	max   int
+type dim struct {
+	start int64
+	end   int64
 }
 
-type block struct {
-	Data []byte
-	Len  int
-}
-
-var (
-	block_count = runtime.NumCPU() * 2
-	block_size  = 1024 * 256
-	//file_name   = "/home/ransom/Downloads/VeraCrypt_1.26.7.tar.gz"
-	//file_name   = "/home/ransom/java/1brc/README.md"
-	file_name = "/home/ransom/java/1brc/measurements.txt"
-
-	workBlocks chan block
-	freeBlocks chan block
-	done       = make(chan struct{})
-	keyvalues  = make(map[string]float64)
-	mu         sync.Mutex
-)
+var filename = "/home/ransom/java/1brc/measurements.txt"
+var blocksize = int64(1 * 256 * 1024)
+var buf []byte
+var dims chan dim
 
 func oops(err error) {
 	if err == nil {
@@ -46,7 +30,7 @@ func oops(err error) {
 	panic(err)
 }
 
-func PrintBytes(ba []byte, breakOnLineEndings bool) {
+func printBytes(ba []byte, breakOnLineEndings bool) {
 	sb := strings.Builder{}
 
 	for _, r := range string(ba) {
@@ -76,212 +60,97 @@ func PrintBytes(ba []byte, breakOnLineEndings bool) {
 		}
 	}
 
-	//fmt.Printf("%s\n", str)
+	fmt.Printf("%s\n", str)
 }
 
-func filereader() {
-	file, err := os.Open(file_name)
+func scan(start int64, end int64) {
+	offset := int64(2)
+
+	for i := start; i <= end; i++ {
+		var town string
+		var temp int64
+
+		lastI := i
+		i += offset
+
+		for {
+			if buf[i] == ';' {
+				town = string(buf[lastI:i])
+				i += 1
+
+				break
+			}
+
+			i++
+		}
+
+	loop:
+		for {
+			switch buf[i] {
+			case '.':
+			case '-':
+				temp = temp * -1
+			case '\n':
+				break loop
+			default:
+				temp = temp * 10
+				temp += int64(buf[i] - '0')
+			}
+
+			i++
+		}
+
+		town = town
+
+		//fmt.Printf("%s:%d\n", town, temp)
+	}
+}
+
+func reader() {
+	file, err := os.Open(filename)
 	oops(err)
 
 	defer func() {
 		oops(file.Close())
 	}()
 
-	var w int64 = 0
-
-	var p []byte
+	var bufStart int64
+	var blockStart int64
+	var blockEnd int64
+	buflen := int64(len(buf))
 
 loop:
 	for {
-		b := <-freeBlocks
-
-		copy(b.Data, p)
-
-		n, err := file.Read(b.Data[len(p):])
-
-		b.Len = n + len(p)
-
-		switch err {
-		case io.EOF:
-			if p != nil {
-				workBlocks <- b
-				p = nil
-			} else {
-				w++
-
-				close(workBlocks)
-
-				break loop
-			}
-		case nil:
-			for n = b.Len - 1; n >= 0 && b.Data[n] != '\n'; n-- {
-			}
-
-			w += int64(n)
-
-			if n < b.Len {
-				p = make([]byte, b.Len-n)
-				copy(p, b.Data[n:])
-			}
-
-			b.Len = n
-
-			workBlocks <- b
-		default:
-			oops(err)
-		}
-	}
-
-	fmt.Printf("read:  %d\n", w)
-}
-
-func mmapFilereader() {
-	file, err := mmap.Open(file_name)
-	oops(err)
-
-	defer func() {
-		oops(file.Close())
-	}()
-
-	size := int64(file.Len())
-
-	var w int64 = 0
-
-	var p []byte
-
-	b := <-freeBlocks
-
-	for w < size {
-		n, err := file.ReadAt(b.Data, w)
-		if err == io.EOF {
-			return
-		} else {
-			oops(err)
+		bufEnd := bufStart + blocksize
+		if bufEnd > buflen {
+			bufEnd = buflen
 		}
 
-		w += int64(n)
-	}
-
-	return
-
-loop:
-	for w < size {
-		b := <-freeBlocks
-
-		copy(b.Data, p)
-
-		n, err := file.ReadAt(b.Data[len(p):], w)
-
-		b.Len = n + len(p)
-
-		switch err {
-		case io.EOF:
-			if p != nil {
-				workBlocks <- b
-				p = nil
-			} else {
-				w++
-
-				close(workBlocks)
-
-				break loop
-			}
-		case nil:
-			for n = b.Len - 1; n >= 0 && b.Data[n] != '\n'; n-- {
-			}
-
-			w += int64(b.Len)
-
-			if n < b.Len {
-				p = make([]byte, b.Len-n)
-				copy(p, b.Data[n:])
-			}
-
-			b.Len = n
-
-			workBlocks <- b
-		default:
-			oops(err)
+		if bufStart == bufEnd {
+			break loop
 		}
-	}
 
-	fmt.Printf("read:  %d\n", w)
-}
-
-func copier() {
-	file, err := os.Create("./out")
-	oops(err)
-
-	defer func() {
-		oops(file.Close())
-	}()
-
-	var w int64 = 0
-
-	for b := range workBlocks {
-		//fmt.Printf("%d\n", len(b))
-
-		n, err := file.Write(b.Data[:b.Len])
+		n, err := file.Read(buf[bufStart:bufEnd])
 		oops(err)
 
-		w += int64(n)
-
-		if n != b.Len {
-			oops(fmt.Errorf("len mismatch"))
+		blockEnd = bufStart + int64(n) - 1
+		for ; blockEnd >= blockStart && buf[blockEnd] != '\n'; blockEnd-- {
 		}
 
-		freeBlocks <- b
+		dims <- dim{
+			start: blockStart,
+			end:   blockEnd,
+		}
+
+		blockStart = blockEnd + 1
+
+		bufStart += int64(n)
 	}
 
-	fmt.Printf("write: %d\n", w)
+	close(dims)
 
-	close(done)
+	fmt.Printf("read:  %d\n", bufStart)
 }
-
-func add(k []byte, v []byte) {
-	return
-
-	key := string(k)
-
-	value, err := strconv.ParseFloat(string(v), 64)
-	oops(err)
-
-	mu.Lock()
-	keyvalues[key] = value
-	mu.Unlock()
-}
-
-//func worker() {
-//	var p []byte
-//	var s, c int
-//
-//	for b := range workBlocks {
-//		b = append(p, b...)
-//		s = 0
-//
-//		for i := 0; i < len(b); i++ {
-//			ch := b[i]
-//			switch ch {
-//			case ';':
-//				c = i
-//			case '\n':
-//				go add(b[s:c], b[c+1:i])
-//
-//				s = i + 1
-//			}
-//		}
-//
-//		if s < len(b) {
-//			clear(p)
-//			p = append(p, b[s:]...)
-//			c = s - c
-//		}
-//
-//		//freeBlocks <- b
-//	}
-//
-//	close(done)
-//}
 
 func main() {
 	start := time.Now()
@@ -289,31 +158,34 @@ func main() {
 		fmt.Printf("%v\n", time.Since(start))
 	}()
 
-	workBlocks = make(chan block, block_count)
-	freeBlocks = make(chan block, block_count)
+	fi, err := os.Stat(filename)
+	oops(err)
 
-	for i := 0; i < block_count; i++ {
-		freeBlocks <- block{
-			Data: make([]byte, block_size),
-			Len:  0,
+	count := int(math.Round(float64(fi.Size()) / float64(blocksize)))
+
+	buf = make([]byte, fi.Size())
+	dims = make(chan dim, count)
+
+	go reader()
+
+	wg := sync.WaitGroup{}
+
+	mg := 0
+
+	for dim := range dims {
+		wg.Add(1)
+		gr := runtime.NumGoroutine()
+		if mg < gr {
+			mg = gr
 		}
+		go func(start int64, end int64) {
+			defer wg.Done()
+
+			scan(start, end)
+		}(dim.start, dim.end)
 	}
 
-	go filereader()
-	go copier()
+	wg.Wait()
 
-	//go worker()
-	//
-	//var keys []string
-	//for k := range keyvalues {
-	//	keys = append(keys, k)
-	//}
-	//
-	//sort.Strings(keys)
-	//
-	//for _, k := range keys {
-	//	fmt.Printf("%s: %f", k, keyvalues[k])
-	//}
-
-	<-done
+	fmt.Printf("%d\n", mg)
 }
