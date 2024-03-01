@@ -1,15 +1,14 @@
 package main
 
 import (
-	"encoding/hex"
+	"flag"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"os"
 	"runtime"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -48,15 +47,16 @@ func (m *Measurement) Calc(other Measurement) {
 
 type Measurements map[string]Measurement
 
-var filename = "/home/ransom/java/1brc/measurements.txt"
+var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
+var verbose = flag.Bool("v", false, "verbose")
 var pageCount int64
 var blockSize int64
 var blockCh chan []byte
 var done = make(chan struct{})
 var measurements = make(chan Measurements, 1000000)
 
-// var debug int64 = 1 * 1024 * 1024 * 1024
-var debug int64 = 0
+// var limitRead int64 = 1 * 1024 * 1024 * 1024
+var limitRead int64 = 0
 
 func oops(err error) {
 	if err == nil {
@@ -64,39 +64,6 @@ func oops(err error) {
 	}
 
 	panic(err)
-}
-
-func printBytes(ba []byte, breakOnLineEndings bool) {
-	sb := strings.Builder{}
-
-	for _, r := range string(ba) {
-		if strconv.IsPrint(r) {
-			sb.WriteString(string(r))
-		} else {
-			sb.WriteString("\\x")
-			sb.WriteString(hex.EncodeToString([]byte(string(r))))
-		}
-	}
-
-	str := sb.String()
-
-	if breakOnLineEndings {
-		endings := []string{
-			"\\x0d\\x0a",
-			"\\x0d",
-			"\\x0a",
-		}
-
-		for _, ending := range endings {
-			if strings.Contains(str, ending) {
-				str = strings.ReplaceAll(str, ending, ending+"\n")
-
-				break
-			}
-		}
-	}
-
-	fmt.Printf("%s\n", str)
 }
 
 func scanBlock(b []byte) {
@@ -155,10 +122,12 @@ func scanBlock(b []byte) {
 func readBlocks() {
 	start := time.Now()
 	defer func() {
-		fmt.Printf("time readBlocks: %v\n", time.Since(start))
+		if *verbose {
+			log.Printf("time readBlocks: %v\n", time.Since(start))
+		}
 	}()
 
-	file, err := os.Open(filename)
+	file, err := os.Open(*filename)
 	oops(err)
 
 	defer func() {
@@ -176,7 +145,7 @@ loop:
 			copy(b, remainder)
 		}
 
-		if debug > 0 && read > debug {
+		if limitRead > 0 && read > limitRead {
 			break loop
 		}
 
@@ -207,7 +176,9 @@ loop:
 
 	close(blockCh)
 
-	fmt.Printf("bytes read:  %d\n", read)
+	if *verbose {
+		log.Printf("bytes read:  %d\n", read)
+	}
 }
 
 func readMeasurements() {
@@ -231,13 +202,20 @@ func readMeasurements() {
 
 	var count int64
 
+	fmt.Printf("{\n")
 	for i, town := range towns {
+		if i > 0 {
+			fmt.Printf(",")
+		}
 		s := sum[town]
-		fmt.Printf("#%d %s: %.1f %.1f %.1f\n", i, town, float64(s.min)/10.0, float64(s.max)/10.0, float64(s.temp)/float64(s.count*10))
+		fmt.Printf("%s=%.1f/%.1f/%.1f\n", town, float64(s.min)/10.0, float64(s.temp)/float64(s.count*10), float64(s.max)/10.0)
 		count += s.count
 	}
+	fmt.Printf("}\n")
 
-	fmt.Printf("count: %d\n", count)
+	if *verbose {
+		fmt.Printf("count: %d\n", count)
+	}
 
 	close(done)
 }
@@ -245,17 +223,21 @@ func readMeasurements() {
 func main() {
 	start := time.Now()
 	defer func() {
-		fmt.Printf("time main: %v\n", time.Since(start))
+		if *verbose {
+			log.Printf("time main: %v\n", time.Since(start))
+		}
 	}()
 
-	if debug > 0 {
-		fmt.Printf("debug limit: %v\n", debug)
+	if limitRead > 0 {
+		if *verbose {
+			log.Printf("debug limit: %v\n", limitRead)
+		}
 	}
 
 	pageCount = 10
 	blockSize = int64(os.Getpagesize()) * pageCount
 
-	fi, err := os.Stat(filename)
+	fi, err := os.Stat(*filename)
 	oops(err)
 
 	countBlocks := int64(math.Round(float64(fi.Size()) / float64(blockSize)))
