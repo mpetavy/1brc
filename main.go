@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"os"
 	"runtime"
 	"sort"
@@ -24,34 +23,30 @@ type Measurement struct {
 func (m *Measurement) Update(temp int64) {
 	m.temp += temp
 	m.count++
-
-	switch {
-	case temp < m.min:
-		m.min = temp
-	case temp > m.max:
-		m.max = temp
-	}
+	m.min = min(m.min, temp)
+	m.max = max(m.max, temp)
 }
 
 func (m *Measurement) Calc(other Measurement) {
 	m.temp += other.temp
 	m.count += other.count
+	m.min = min(m.min, other.min)
+	m.max = max(m.max, other.max)
+}
 
-	switch {
-	case other.min < m.min:
-		m.min = other.min
-	case other.max > m.max:
-		m.max = other.max
-	}
+type Block struct {
+	buf []byte
+	len int
 }
 
 type Measurements map[string]Measurement
 
 var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
 var verbose = flag.Bool("v", false, "verbose")
-var pageCount int64
-var blockSize int64
-var blockCh chan []byte
+var workerCount = runtime.NumCPU()
+var blockSize = os.Getpagesize() * 10
+var blockCount = 100
+var blocks chan Block
 var done = make(chan struct{})
 var measurements = make(chan Measurements, 1000000)
 
@@ -66,12 +61,12 @@ func oops(err error) {
 	panic(err)
 }
 
-func scanBlock(b []byte) {
+func scanBlock(b Block) {
 	offset := 3
 
 	ms := make(Measurements)
 
-	for index := 0; index < len(b); index++ {
+	for index := 0; index < b.len; index++ {
 		var town string
 		var temp int64
 		var minus bool
@@ -80,8 +75,8 @@ func scanBlock(b []byte) {
 		index += offset
 
 		for {
-			if b[index] == ';' {
-				town = string(b[startIndex:index])
+			if b.buf[index] == ';' {
+				town = string(b.buf[startIndex:index])
 				index += 1
 
 				break
@@ -92,7 +87,7 @@ func scanBlock(b []byte) {
 
 	loop:
 		for {
-			switch b[index] {
+			switch b.buf[index] {
 			case '.':
 			case '-':
 				minus = true
@@ -100,7 +95,7 @@ func scanBlock(b []byte) {
 				break loop
 			default:
 				temp = temp * 10
-				temp += int64(b[index] - '0')
+				temp += int64(b.buf[index] - '0')
 			}
 
 			index++
@@ -135,21 +130,27 @@ func readBlocks() {
 	}()
 
 	var read int64 = 0
-
 	var remainder []byte
+
+	workerWg := sync.WaitGroup{}
+	workerSem := make(chan struct{}, workerCount)
+	for i := 0; i < workerCount; i++ {
+		workerSem <- struct{}{}
+	}
 
 loop:
 	for {
-		b := make([]byte, blockSize)
+		b := <-blocks
+
 		if len(remainder) > 0 {
-			copy(b, remainder)
+			copy(b.buf, remainder)
 		}
 
 		if limitRead > 0 && read > limitRead {
 			break loop
 		}
 
-		n, err := file.Read(b[len(remainder):])
+		n, err := file.Read(b.buf[len(remainder):])
 		if err == io.EOF {
 			break
 		}
@@ -161,20 +162,40 @@ loop:
 
 		var i int
 
-		for i = l; i > 0 && b[i-1] != '\n'; i-- {
+		for i = l; i > 0 && b.buf[i-1] != '\n'; i-- {
 		}
+
+		b.len = i
 
 		remainder = nil
 
 		if i < l {
 			remainder = make([]byte, l-i)
-			copy(remainder, b[i:])
+			copy(remainder, b.buf[i:])
 		}
 
-		blockCh <- b[:i]
+		go func() {
+			<-workerSem
+
+			workerWg.Add(1)
+			
+			go func(b Block) {
+				defer func() {
+					workerWg.Done()
+				}()
+
+				scanBlock(b)
+
+				blocks <- b
+
+				workerSem <- struct{}{}
+			}(b)
+		}()
 	}
 
-	close(blockCh)
+	workerWg.Wait()
+
+	close(measurements)
 
 	if *verbose {
 		log.Printf("bytes read:  %d\n", read)
@@ -221,6 +242,8 @@ func readMeasurements() {
 }
 
 func main() {
+	flag.Parse()
+
 	start := time.Now()
 	defer func() {
 		if *verbose {
@@ -234,40 +257,18 @@ func main() {
 		}
 	}
 
-	pageCount = 10
-	blockSize = int64(os.Getpagesize()) * pageCount
+	blocks = make(chan Block, blockCount)
 
-	fi, err := os.Stat(*filename)
-	oops(err)
+	for i := 0; i < blockCount; i++ {
+		b := Block{
+			buf: make([]byte, blockSize),
+		}
 
-	countBlocks := int64(math.Round(float64(fi.Size()) / float64(blockSize)))
-
-	blockCh = make(chan []byte, countBlocks)
+		blocks <- b
+	}
 
 	go readBlocks()
 	go readMeasurements()
-
-	wgReader := sync.WaitGroup{}
-	sem := make(chan struct{}, runtime.NumCPU())
-
-	for b := range blockCh {
-		sem <- struct{}{}
-
-		wgReader.Add(1)
-
-		go func(b []byte) {
-			defer func() {
-				wgReader.Done()
-				<-sem
-			}()
-
-			scanBlock(b)
-		}(b)
-	}
-
-	wgReader.Wait()
-
-	close(measurements)
 
 	<-done
 }
