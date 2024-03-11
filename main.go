@@ -6,32 +6,29 @@ import (
 	"io"
 	"log"
 	"os"
-	"runtime"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-type Measurement struct {
+type Town struct {
 	town  string
 	min   int64
 	max   int64
 	temp  int64
 	count int64
+	sync.Mutex
 }
 
-func (m *Measurement) Update(temp int64) {
-	m.temp += temp
-	m.count++
-	m.min = min(m.min, temp)
-	m.max = max(m.max, temp)
-}
+func (town *Town) Update(temp int64) {
+	town.Lock()
+	defer town.Unlock()
 
-func (m *Measurement) Calc(other Measurement) {
-	m.temp += other.temp
-	m.count += other.count
-	m.min = min(m.min, other.min)
-	m.max = max(m.max, other.max)
+	town.temp += temp
+	town.count++
+	town.min = min(town.min, temp)
+	town.max = max(town.max, temp)
 }
 
 type Block struct {
@@ -39,18 +36,17 @@ type Block struct {
 	len int
 }
 
-type Measurements map[string]Measurement
-
 var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
 var verbose = flag.Bool("v", false, "verbose")
-var workerCount = runtime.NumCPU()
 var blockSize = os.Getpagesize() * 10
-var blockCount = 100
-var blocks chan Block
-var done = make(chan struct{})
-var measurements = make(chan Measurements, 1000000)
+var blockCount = 1000
+var blocks chan *Block
+var towns = make(map[string]*Town)
+var townsLock = sync.RWMutex{}
+var allTowns atomic.Bool
 
-// var limitRead int64 = 1 * 1024 * 1024 * 1024
+//var limitRead int64 = 1 * 1024 * 1024 * 1024
+
 var limitRead int64 = 0
 
 func oops(err error) {
@@ -61,13 +57,11 @@ func oops(err error) {
 	panic(err)
 }
 
-func scanBlock(b Block) {
+func scanBlock(b *Block) {
 	offset := 3
 
-	ms := make(Measurements)
-
 	for index := 0; index < b.len; index++ {
-		var town string
+		var townName string
 		var temp int64
 		var minus bool
 
@@ -76,7 +70,7 @@ func scanBlock(b Block) {
 
 		for {
 			if b.buf[index] == ';' {
-				town = string(b.buf[startIndex:index])
+				townName = string(b.buf[startIndex:index])
 				index += 1
 
 				break
@@ -105,13 +99,35 @@ func scanBlock(b Block) {
 			temp = temp * -1
 		}
 
-		m, _ := ms[town]
-		m.town = town
-		m.Update(temp)
-		ms[town] = m
-	}
+		if allTowns.Load() {
+			town, _ := towns[townName]
 
-	measurements <- ms
+			town.Update(temp)
+		} else {
+			townsLock.RLock()
+			town, ok := towns[townName]
+			townsLock.RUnlock()
+
+			if !ok {
+				townsLock.Lock()
+
+				town, ok = towns[townName]
+				if !ok {
+					town = &Town{}
+
+					towns[townName] = town
+
+					if len(towns) == 413 {
+						allTowns.Store(true)
+					}
+				}
+
+				townsLock.Unlock()
+			}
+
+			town.Update(temp)
+		}
+	}
 }
 
 func readBlocks() {
@@ -132,11 +148,7 @@ func readBlocks() {
 	var read int64 = 0
 	var remainder []byte
 
-	workerWg := sync.WaitGroup{}
-	workerSem := make(chan struct{}, workerCount)
-	for i := 0; i < workerCount; i++ {
-		workerSem <- struct{}{}
-	}
+	blocksWg := sync.WaitGroup{}
 
 loop:
 	for {
@@ -171,31 +183,24 @@ loop:
 
 		if i < l {
 			remainder = make([]byte, l-i)
+
 			copy(remainder, b.buf[i:])
 		}
 
-		go func() {
-			<-workerSem
+		blocksWg.Add(1)
 
-			workerWg.Add(1)
-			
-			go func(b Block) {
-				defer func() {
-					workerWg.Done()
-				}()
-
-				scanBlock(b)
+		go func(b *Block) {
+			defer func() {
+				blocksWg.Done()
 
 				blocks <- b
+			}()
 
-				workerSem <- struct{}{}
-			}(b)
-		}()
+			scanBlock(b)
+		}(b)
 	}
 
-	workerWg.Wait()
-
-	close(measurements)
+	blocksWg.Wait()
 
 	if *verbose {
 		log.Printf("bytes read:  %d\n", read)
@@ -203,42 +208,32 @@ loop:
 }
 
 func readMeasurements() {
-	sum := make(Measurements)
-
-	for ms := range measurements {
-		for town, m := range ms {
-			s, _ := sum[town]
-			s.town = town
-			s.Calc(m)
-			sum[town] = s
-		}
+	townNames := []string{}
+	for townName := range towns {
+		townNames = append(townNames, townName)
 	}
 
-	towns := []string{}
-	for town := range sum {
-		towns = append(towns, town)
-	}
-
-	sort.Strings(towns)
+	sort.Strings(townNames)
 
 	var count int64
 
 	fmt.Printf("{\n")
-	for i, town := range towns {
+
+	for i, townName := range townNames {
 		if i > 0 {
 			fmt.Printf(",")
 		}
-		s := sum[town]
-		fmt.Printf("%s=%.1f/%.1f/%.1f\n", town, float64(s.min)/10.0, float64(s.temp)/float64(s.count*10), float64(s.max)/10.0)
-		count += s.count
+
+		town := towns[townName]
+		fmt.Printf("%s=%.1f/%.1f/%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
+		count += town.count
 	}
+
 	fmt.Printf("}\n")
 
 	if *verbose {
 		fmt.Printf("count: %d\n", count)
 	}
-
-	close(done)
 }
 
 func main() {
@@ -257,18 +252,16 @@ func main() {
 		}
 	}
 
-	blocks = make(chan Block, blockCount)
+	blocks = make(chan *Block, blockCount)
 
 	for i := 0; i < blockCount; i++ {
-		b := Block{
+		b := &Block{
 			buf: make([]byte, blockSize),
 		}
 
 		blocks <- b
 	}
 
-	go readBlocks()
-	go readMeasurements()
-
-	<-done
+	readBlocks()
+	readMeasurements()
 }
