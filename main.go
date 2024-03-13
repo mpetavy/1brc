@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/dolthub/swiss"
 	"io"
 	"log"
 	"os"
@@ -36,12 +37,16 @@ type Block struct {
 	len int
 }
 
+const (
+	TOWNS_COUNT = 413
+)
+
 var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
 var verbose = flag.Bool("v", false, "verbose")
 var blockSize = os.Getpagesize() * 10
 var blockCount = 1000
 var blocks chan *Block
-var towns = make(map[string]*Town)
+var towns = swiss.NewMap[string, *Town](TOWNS_COUNT)
 var townsLock = sync.RWMutex{}
 var allTowns atomic.Bool
 
@@ -100,24 +105,24 @@ func scanBlock(b *Block) {
 		}
 
 		if allTowns.Load() {
-			town, _ := towns[townName]
+			town, _ := towns.Get(townName)
 
 			town.Update(temp)
 		} else {
 			townsLock.RLock()
-			town, ok := towns[townName]
+			town, ok := towns.Get(townName)
 			townsLock.RUnlock()
 
 			if !ok {
 				townsLock.Lock()
 
-				town, ok = towns[townName]
+				town, ok = towns.Get(townName)
 				if !ok {
 					town = &Town{}
 
-					towns[townName] = town
+					towns.Put(townName, town)
 
-					if len(towns) == 413 {
+					if towns.Count() == TOWNS_COUNT {
 						allTowns.Store(true)
 					}
 				}
@@ -209,9 +214,10 @@ loop:
 
 func readMeasurements() {
 	townNames := []string{}
-	for townName := range towns {
-		townNames = append(townNames, townName)
-	}
+	towns.Iter(func(k string, v *Town) bool {
+		townNames = append(townNames, k)
+		return false
+	})
 
 	sort.Strings(townNames)
 
@@ -224,7 +230,7 @@ func readMeasurements() {
 			fmt.Printf(",")
 		}
 
-		town := towns[townName]
+		town, _ := towns.Get(townName)
 		fmt.Printf("%s=%.1f/%.1f/%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
 		count += town.count
 	}
