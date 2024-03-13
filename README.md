@@ -5,8 +5,8 @@
 This is my GO implementation of the 1brc challenge of https://github.com/gunnarmorling/1brc
 
 Running on my machine it takes about 12.27 secs to finish using SwissMap.
-Using GO's original map implementation add about 1 sec.
 
+Using GO's original map implementation just add about 1 sec.
 
     goos: linux
     goarch: amd64
@@ -16,7 +16,7 @@ Using GO's original map implementation add about 1 sec.
     PASS
     ok  	1brc	12.276s
 
-Here some infos of machine.
+Here some infos about my machine.
 
     OS: Pop!_OS 22.04 LTS x86_64
     Kernel: 6.6.10-76060610-generic
@@ -33,7 +33,6 @@ Here some infos of machine.
     CPU: AMD Ryzen 7 3700X (16) @ 3.600GHz
     GPU: AMD ATI 0c:00.0 Device 744c
     Memory: 12362MiB / 64201MiB
-    
 
 ### License
 
