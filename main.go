@@ -3,38 +3,41 @@ package main
 import (
 	"flag"
 	"fmt"
-	"github.com/dolthub/swiss"
 	"io"
 	"log"
 	"os"
 	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/dolthub/swiss"
 )
 
 type Town struct {
-	town  string
 	min   int64
 	max   int64
 	temp  int64
 	count int64
-	sync.Mutex
 }
 
 func (town *Town) Update(temp int64) {
-	town.Lock()
-	defer town.Unlock()
-
 	town.temp += temp
 	town.count++
 	town.min = min(town.min, temp)
 	town.max = max(town.max, temp)
 }
 
+func (town *Town) Sum(other *Town) {
+	town.temp += other.temp
+	town.count += other.count
+	town.min = min(town.min, other.min)
+	town.max = max(town.max, other.max)
+}
+
 type Block struct {
-	buf []byte
-	len int
+	buf   []byte
+	len   int
+	towns *swiss.Map[string, *Town]
 }
 
 const (
@@ -43,12 +46,11 @@ const (
 
 var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
 var verbose = flag.Bool("v", false, "verbose")
-var blockSize = os.Getpagesize() * 10
+var blockSize = os.Getpagesize() * 1000
 var blockCount = 1000
 var blocks chan *Block
 var towns = swiss.NewMap[string, *Town](TOWNS_COUNT)
-var townsLock = sync.RWMutex{}
-var allTowns atomic.Bool
+var townsLock = sync.Mutex{}
 
 //var limitRead int64 = 1 * 1024 * 1024 * 1024
 
@@ -64,6 +66,8 @@ func oops(err error) {
 
 func scanBlock(b *Block) {
 	offset := 3
+
+	b.towns.Clear()
 
 	for index := 0; index < b.len; index++ {
 		var townName string
@@ -104,35 +108,29 @@ func scanBlock(b *Block) {
 			temp = temp * -1
 		}
 
-		if allTowns.Load() {
-			town, _ := towns.Get(townName)
+		town, ok := b.towns.Get(townName)
+		if !ok {
+			town = &Town{}
 
-			town.Update(temp)
-		} else {
-			townsLock.RLock()
-			town, ok := towns.Get(townName)
-			townsLock.RUnlock()
-
-			if !ok {
-				townsLock.Lock()
-
-				town, ok = towns.Get(townName)
-				if !ok {
-					town = &Town{}
-
-					towns.Put(townName, town)
-
-					if towns.Count() == TOWNS_COUNT {
-						allTowns.Store(true)
-					}
-				}
-
-				townsLock.Unlock()
-			}
-
-			town.Update(temp)
+			b.towns.Put(townName, town)
 		}
+
+		town.Update(temp)
 	}
+
+	townsLock.Lock()
+	b.towns.Iter(func(k string, v *Town) (stop bool) {
+		town,ok := towns.Get(k)
+		if !ok {
+			town = &Town{}
+			towns.Put(k,town)
+		}
+			
+		town.Sum(v)
+
+		return false
+	})
+	townsLock.Unlock()
 }
 
 func readBlocks() {
@@ -263,6 +261,7 @@ func main() {
 	for i := 0; i < blockCount; i++ {
 		b := &Block{
 			buf: make([]byte, blockSize),
+			towns: swiss.NewMap[string,*Town](TOWNS_COUNT),
 		}
 
 		blocks <- b
