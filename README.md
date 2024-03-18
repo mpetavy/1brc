@@ -6,8 +6,6 @@ This is my GO implementation of the 1brc challenge of https://github.com/gunnarm
 
 Running on my machine it takes about 5.92 secs to finish using SwissMap.
 
-Using GO's original map implementation just add about 1 sec.
-
 	goos: linux
 	goarch: amd64
 	pkg: 1brc
