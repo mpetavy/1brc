@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"fmt"
+	"github.com/edsrzf/mmap-go"
 	"io"
 	"os"
 	"sort"
@@ -45,6 +47,7 @@ const (
 
 var filename = flag.String("file", "measurements.txt", "file path to measurements")
 var limit = flag.Int64("limit", 0, "for DEV purpose limit the amount to read from file")
+var mm = flag.Bool("mmap", false, "use mmap file")
 var verbose = flag.Bool("verbose", false, "verbose")
 var blockSize = os.Getpagesize() * 1000
 var blockCount = 1000
@@ -136,18 +139,33 @@ func info(s string) {
 	}
 }
 
-func readBlocks() {
+func readFile() {
 	start := time.Now()
 	defer func() {
 		info(fmt.Sprintf("time read blocks: %v", time.Since(start)))
 	}()
 
-	file, err := os.Open(*filename)
+	var r io.Reader
+
+	f, err := os.Open(*filename)
 	oops(err)
 
 	defer func() {
-		oops(file.Close())
+		oops(f.Close())
 	}()
+
+	if *mm {
+		m, err := mmap.Map(f, mmap.RDONLY, 0)
+		oops(err)
+
+		defer func() {
+			oops(m.Unmap())
+		}()
+
+		r = bytes.NewReader(m)
+	} else {
+		r = f
+	}
 
 	var read int64 = 0
 	var remainder []byte
@@ -166,7 +184,7 @@ loop:
 			break loop
 		}
 
-		n, err := file.Read(b.buf[len(remainder):])
+		n, err := r.Read(b.buf[len(remainder):])
 		if err == io.EOF {
 			break
 		}
@@ -210,7 +228,8 @@ loop:
 }
 
 func printMeasurements() {
-	townNames := []string{}
+	var townNames []string
+
 	towns.Iter(func(k string, v *Town) bool {
 		townNames = append(townNames, k)
 		return false
@@ -266,6 +285,6 @@ func main() {
 		blocks <- b
 	}
 
-	readBlocks()
+	readFile()
 	printMeasurements()
 }

@@ -73,11 +73,13 @@ Notebook:
 	GPU: AMD ATI 64:00.0 Device 15bf 
 	Memory: 3401MiB / 27841MiB 
 
-	goos: linux
-	goarch: amd64
-	pkg: 1brc
-	cpu: AMD Ryzen 7 7840HS with Radeon 780M Graphics
-	BenchmarkMain-16    	       1	5594244327 ns/op
+    goos: linux
+    goarch: amd64
+    pkg: 1brc
+    cpu: AMD Ryzen 7 7840HS with Radeon 780M Graphics
+    BenchmarkMain-16    	       1	6587488481 ns/op
+    PASS
+    ok  	1brc	7.075s
 
 ### License
 
