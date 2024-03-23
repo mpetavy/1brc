@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"sort"
 	"sync"
@@ -44,17 +43,15 @@ const (
 	TOWNS_COUNT = 413
 )
 
-var filename = flag.String("file", "/home/ransom/java/1brc/measurements.txt", "file path to measurements")
-var verbose = flag.Bool("v", false, "verbose")
+var filename = flag.String("file", "measurements.txt", "file path to measurements")
+var limit = flag.Int64("limit", 0, "for DEV purpose limit the amount to read from file")
+var verbose = flag.Bool("verbose", false, "verbose")
 var blockSize = os.Getpagesize() * 1000
 var blockCount = 1000
 var blocks chan *Block
 var towns = swiss.NewMap[string, *Town](TOWNS_COUNT)
 var townsLock = sync.Mutex{}
-
-//var limitRead int64 = 1 * 1024 * 1024 * 1024
-
-var limitRead int64 = 0
+var infos []string
 
 func oops(err error) {
 	if err == nil {
@@ -120,12 +117,12 @@ func scanBlock(b *Block) {
 
 	townsLock.Lock()
 	b.towns.Iter(func(k string, v *Town) (stop bool) {
-		town,ok := towns.Get(k)
+		town, ok := towns.Get(k)
 		if !ok {
 			town = &Town{}
-			towns.Put(k,town)
+			towns.Put(k, town)
 		}
-			
+
 		town.Sum(v)
 
 		return false
@@ -133,12 +130,16 @@ func scanBlock(b *Block) {
 	townsLock.Unlock()
 }
 
+func info(s string) {
+	if *verbose {
+		infos = append(infos, s)
+	}
+}
+
 func readBlocks() {
 	start := time.Now()
 	defer func() {
-		if *verbose {
-			log.Printf("time readBlocks: %v\n", time.Since(start))
-		}
+		info(fmt.Sprintf("time read blocks: %v", time.Since(start)))
 	}()
 
 	file, err := os.Open(*filename)
@@ -161,7 +162,7 @@ loop:
 			copy(b.buf, remainder)
 		}
 
-		if limitRead > 0 && read > limitRead {
+		if *limit > 0 && read > *limit {
 			break loop
 		}
 
@@ -205,12 +206,10 @@ loop:
 
 	blocksWg.Wait()
 
-	if *verbose {
-		log.Printf("bytes read:  %d\n", read)
-	}
+	info(fmt.Sprintf("bytes read: %d", read))
 }
 
-func readMeasurements() {
+func printMeasurements() {
 	townNames := []string{}
 	towns.Iter(func(k string, v *Town) bool {
 		townNames = append(townNames, k)
@@ -235,9 +234,7 @@ func readMeasurements() {
 
 	fmt.Printf("}\n")
 
-	if *verbose {
-		fmt.Printf("count: %d\n", count)
-	}
+	info(fmt.Sprintf("count rows: %d", count))
 }
 
 func main() {
@@ -245,28 +242,30 @@ func main() {
 
 	start := time.Now()
 	defer func() {
+		info(fmt.Sprintf("time needed: %v", time.Since(start)))
+
 		if *verbose {
-			log.Printf("time main: %v\n", time.Since(start))
+			for _, i := range infos {
+				fmt.Println(i)
+			}
 		}
 	}()
 
-	if limitRead > 0 {
-		if *verbose {
-			log.Printf("debug limit: %v\n", limitRead)
-		}
+	if *limit > 0 {
+		info(fmt.Sprintf("read limit: %v", *limit))
 	}
 
 	blocks = make(chan *Block, blockCount)
 
 	for i := 0; i < blockCount; i++ {
 		b := &Block{
-			buf: make([]byte, blockSize),
-			towns: swiss.NewMap[string,*Town](TOWNS_COUNT),
+			buf:   make([]byte, blockSize),
+			towns: swiss.NewMap[string, *Town](TOWNS_COUNT),
 		}
 
 		blocks <- b
 	}
 
 	readBlocks()
-	readMeasurements()
+	printMeasurements()
 }

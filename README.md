@@ -4,19 +4,31 @@
 
 This is my GO implementation of the 1brc challenge of https://github.com/gunnarmorling/1brc
 
-Running on my machine it takes about 12.27 secs to finish using SwissMap.
+Running on my machine it takes about 7.776s to finish using SwissMap.
 
 Using GO's original map implementation just add about 1 sec.
 
-    goos: linux
-    goarch: amd64
-    pkg: 1brc
-    cpu: AMD Ryzen 7 3700X 8-Core Processor             
-    BenchmarkMain-16    	       1	12265206039 ns/op
-    PASS
-    ok  	1brc	12.276s
+### Usage
 
-Here some infos about my machine.
+You must generate the "measurements.txt" file like it is documented in  the 1brc challenge.
+
+Copy or link the measurements.txt file into the directory of the main.go file or use the flag "-file" to define the path to "measurements.txt". 
+
+To run the app and just print the calculated values
+
+    go run . -file measurements.txt
+
+To run the app and print the calculated values and counted lines and time needed
+
+    go run . -file measurements.txt -verbose
+
+To bench the app with GO tools
+
+    go test -bench=. -file measurements.txt
+
+### Results 
+
+PC:
 
     OS: Pop!_OS 22.04 LTS x86_64
     Kernel: 6.6.10-76060610-generic
@@ -33,6 +45,14 @@ Here some infos about my machine.
     CPU: AMD Ryzen 7 3700X (16) @ 3.600GHz
     GPU: AMD ATI 0c:00.0 Device 744c
     Memory: 12362MiB / 64201MiB
+
+    goos: linux
+    goarch: amd64
+    pkg: 1brc
+    cpu: AMD Ryzen 7 3700X 8-Core Processor             
+    BenchmarkMain-16    	       1	7063047022 ns/op
+    PASS
+    ok  	1brc	7.776s
 
 ### License
 
