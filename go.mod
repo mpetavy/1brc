@@ -9,5 +9,5 @@ require (
 
 require (
 	github.com/dolthub/maphash v0.1.0 // indirect
-	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/sys v0.20.0 // indirect
 )
