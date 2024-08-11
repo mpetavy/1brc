@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,11 +46,11 @@ const (
 	TOWNS_COUNT = 413
 )
 
-var filename = flag.String("file", "measurements.txt", "file path to measurements")
-var limit = flag.Int64("limit", 0, "for DEV purpose limit the amount to read from file")
-var mm = flag.Bool("mmap", false, "use mmap file")
-var json = flag.Bool("json", false, "ucs JSON output")
-var verbose = flag.Bool("verbose", false, "verbose")
+var filename = flag.String("f", "measurements.txt", "file path to measurements")
+var limit = flag.Int64("l", 0, "for DEV purpose limit the amount to read from file")
+var mm = flag.Bool("m", false, "use mmap file")
+var json = flag.Bool("j", false, "use JSON output")
+var verbose = flag.Bool("v", false, "verbose")
 var blockSize = os.Getpagesize() * 1000
 var blockCount = 1000
 var blocks chan *Block
@@ -228,7 +229,7 @@ loop:
 	info(fmt.Sprintf("bytes read: %d", read))
 }
 
-func printMeasurements() {
+func printMeasurements(d time.Duration) {
 	var townNames []string
 
 	towns.Iter(func(k string, v *Town) bool {
@@ -239,45 +240,38 @@ func printMeasurements() {
 	sort.Strings(townNames)
 
 	var count int64
+	sb := strings.Builder{}
 
 	if *json {
-		fmt.Printf("[\n")
+		sb.WriteString("[\n")
 
 		for i, townName := range townNames {
 			if i > 0 {
-				fmt.Printf(",\n")
+				sb.WriteString(",\n")
 			}
 
 			town, _ := towns.Get(townName)
-			fmt.Printf("{\n\t\"city\": \"%s\",\n\t\"min\": %.1f,\n\t\"avg\": %.1f,\n\t\"max\": %.1f\n}", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
+			sb.WriteString(fmt.Sprintf("{\n\t\"city\": \"%s\",\n\t\"min\": %.1f,\n\t\"avg\": %.1f,\n\t\"max\": %.1f\n}", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0))
 			count += town.count
 		}
 
-		fmt.Printf("\n]\n")
+		sb.WriteString("\n]\n")
 	} else {
 		for _, townName := range townNames {
 			town, _ := towns.Get(townName)
-			fmt.Printf("%s;%.1f;%.1f;%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
+			sb.WriteString(fmt.Sprintf("%s;%.1f;%.1f;%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0))
 			count += town.count
 		}
 	}
 
+	fmt.Printf(sb.String())
+
 	info(fmt.Sprintf("count rows: %d", count))
+	info(fmt.Sprintf("time needed: %v", d))
 }
 
 func main() {
 	flag.Parse()
-
-	start := time.Now()
-	defer func() {
-		info(fmt.Sprintf("time needed: %v", time.Since(start)))
-
-		if *verbose {
-			for _, i := range infos {
-				fmt.Println(i)
-			}
-		}
-	}()
 
 	if *limit > 0 {
 		info(fmt.Sprintf("read limit: %v", *limit))
@@ -294,6 +288,16 @@ func main() {
 		blocks <- b
 	}
 
+	start := time.Now()
+
 	readFile()
-	printMeasurements()
+
+	printMeasurements(time.Since(start))
+
+	if *verbose {
+		fmt.Println()
+		for _, i := range infos {
+			fmt.Println(i)
+		}
+	}
 }
