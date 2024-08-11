@@ -48,6 +48,7 @@ const (
 var filename = flag.String("file", "measurements.txt", "file path to measurements")
 var limit = flag.Int64("limit", 0, "for DEV purpose limit the amount to read from file")
 var mm = flag.Bool("mmap", false, "use mmap file")
+var json = flag.Bool("json", false, "ucs JSON output")
 var verbose = flag.Bool("verbose", false, "verbose")
 var blockSize = os.Getpagesize() * 1000
 var blockCount = 1000
@@ -239,19 +240,27 @@ func printMeasurements() {
 
 	var count int64
 
-	fmt.Printf("{\n")
+	if *json {
+		fmt.Printf("[\n")
 
-	for i, townName := range townNames {
-		if i > 0 {
-			fmt.Printf(",")
+		for i, townName := range townNames {
+			if i > 0 {
+				fmt.Printf(",\n")
+			}
+
+			town, _ := towns.Get(townName)
+			fmt.Printf("{\n\t\"city\": \"%s\",\n\t\"min\": %.1f,\n\t\"avg\": %.1f,\n\t\"max\": %.1f\n}", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
+			count += town.count
 		}
 
-		town, _ := towns.Get(townName)
-		fmt.Printf("%s=%.1f/%.1f/%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
-		count += town.count
+		fmt.Printf("\n]\n")
+	} else {
+		for _, townName := range townNames {
+			town, _ := towns.Get(townName)
+			fmt.Printf("%s;%.1f;%.1f;%.1f\n", townName, float64(town.min)/10.0, float64(town.temp)/float64(town.count*10), float64(town.max)/10.0)
+			count += town.count
+		}
 	}
-
-	fmt.Printf("}\n")
 
 	info(fmt.Sprintf("count rows: %d", count))
 }
