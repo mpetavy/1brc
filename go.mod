@@ -1,8 +1,8 @@
 module 1brc
 
-go 1.23
+go 1.23.0
 
-toolchain go1.23.2
+toolchain go1.23.6
 
 require (
 	github.com/dolthub/swiss v0.2.1
@@ -12,5 +12,5 @@ require (
 require (
 	github.com/dolthub/maphash v0.1.0 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
-	golang.org/x/sys v0.29.0 // indirect
+	golang.org/x/sys v0.31.0 // indirect
 )
